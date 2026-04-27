@@ -14,6 +14,7 @@ The intended consumer is an AI assistant, not a human UI. Output is JSON (search
 - `chatparser/embed.py` — `sentence-transformers` (BAAI/bge-small-en-v1.5, 384-dim, normalized for cosine). Two layers: per-conversation blobs and per-message chunks (~1200-char windows w/ 200 overlap).
 - `chatparser/search.py` — semantic, granular (chunk-level), lexical (FTS5 BM25), and hybrid (RRF fusion of semantic+BM25). Plus `timeline`, `render_conversation`, `conversation_summary`.
 - `chatparser/summarize.py` — generates tldr/abstract/entities/status per conversation. Two backends: `claude -p` via Claude Code, or direct Anthropic API calls via the `anthropic` SDK. See [Summaries](#summaries-optional) below.
+- `chatparser/export.py` — packages conversations matching a query into a portable zip (markdown transcripts + INSTRUCTIONS.md + INDEX.json) so a fresh Claude session can resume a project without re-ingesting the corpus.
 - `chatparser/db.py` — SQLite schema (WAL). Tables: `conversations`, `messages`, `attachments`, `summaries`, `embeddings`, `message_chunks`, plus `messages_fts` (FTS5).
 
 ## Setup
@@ -48,6 +49,9 @@ uv run chatparser timeline --bucket month
 # load a specific conversation
 uv run chatparser meta <conversation_id>
 uv run chatparser show <conversation_id> --max-chars 20000
+
+# package a project's worth of conversations into a portable zip for a fresh Claude session
+uv run chatparser export "<project name>" -k 30 --status open,exploratory
 ```
 
 See [CLAUDE.md](CLAUDE.md) for the recommended Claude-driven workflow.

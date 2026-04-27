@@ -6,7 +6,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import db, embed, ingest, search, summarize
+from . import db, embed, export, ingest, search, summarize
 
 
 def _add_db_arg(p: argparse.ArgumentParser) -> None:
@@ -124,6 +124,25 @@ def cmd_meta(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_export(args: argparse.Namespace) -> int:
+    conn = db.connect(args.db)
+    statuses = [s for s in (args.status or "").split(",") if s] or None
+    output = Path(args.output) if args.output else Path(
+        f"chatparser-export-{export._slugify(args.query)}.zip"
+    )
+    stats = export.export_bundle(
+        conn,
+        args.query,
+        output_path=output,
+        k=args.k,
+        statuses=statuses,
+        max_chars=args.max_chars,
+        model_name=args.model,
+    )
+    print(json.dumps(stats, indent=2))
+    return 0
+
+
 def cmd_stats(args: argparse.Namespace) -> int:
     conn = db.connect(args.db)
     db.init_schema(conn)
@@ -234,6 +253,23 @@ def build_parser() -> argparse.ArgumentParser:
     pst = sub.add_parser("stats", help="Database stats")
     _add_db_arg(pst)
     pst.set_defaults(func=cmd_stats)
+
+    pex = sub.add_parser(
+        "export",
+        help="Bundle conversations matching a query into a portable zip for a fresh Claude session",
+    )
+    _add_db_arg(pex)
+    pex.add_argument("query", help="Topic / project name (uses hybrid+granular search)")
+    pex.add_argument("-o", "--output", default=None, help="Output zip path (default: chatparser-export-<slug>.zip)")
+    pex.add_argument("-k", type=int, default=30, help="Max conversations to include (default 30)")
+    pex.add_argument(
+        "--status",
+        default=None,
+        help="Comma-separated status filter, e.g. 'open,exploratory'",
+    )
+    pex.add_argument("--max-chars", type=int, default=None, help="Truncate each rendered conversation")
+    pex.add_argument("--model", default=embed.DEFAULT_MODEL)
+    pex.set_defaults(func=cmd_export)
 
     return p
 
