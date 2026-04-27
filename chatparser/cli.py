@@ -94,6 +94,7 @@ def cmd_summarize(args: argparse.Namespace) -> int:
         limit=args.limit,
         max_chars=args.max_chars,
         progress_path=progress_path,
+        backend=args.backend,
     )
     print(json.dumps(stats, indent=2, default=str))
     return 0
@@ -199,7 +200,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Generate tldr/abstract per conversation via headless `claude -p` (uses your Max plan)",
     )
     _add_db_arg(psum)
-    psum.add_argument("--model", default=summarize.DEFAULT_MODEL, help="claude model alias")
+    psum.add_argument("--model", default=summarize.DEFAULT_MODEL, help="claude model alias (haiku/sonnet/opus)")
+    psum.add_argument(
+        "--backend",
+        choices=["cli", "api"],
+        default=summarize.DEFAULT_BACKEND,
+        help="cli: shell out to `claude -p` (uses Claude Code auth). "
+        "api: direct Anthropic API calls (requires ANTHROPIC_API_KEY).",
+    )
     psum.add_argument("--refresh", action="store_true", help="Re-summarize even if a summary exists")
     psum.add_argument("--limit", type=int, default=None, help="Cap number of conversations (test runs)")
     psum.add_argument("--concurrency", type=int, default=summarize.DEFAULT_CONCURRENCY)

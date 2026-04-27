@@ -1,14 +1,23 @@
-"""Generate per-conversation tldr + abstract via headless `claude -p`.
+"""Generate per-conversation tldr + abstract.
 
-Routes through the Claude Code CLI so usage bills against the user's Max plan
-allowance (no separate ANTHROPIC_API_KEY required). Each conversation is
-processed in its own subprocess, with up to `concurrency` calls in flight.
-Failures are logged but don't abort the run; rerun is idempotent (skips
-already-summarized conversations unless --refresh).
+Two backends:
+
+- ``cli`` (default): shells out to ``claude -p``. Uses whatever Claude Code is
+  authenticated against. Convenient if Claude Code is already installed and
+  you have plenty of plan quota — fastest path on a Max plan.
+- ``api``: direct calls to the Anthropic Messages API via the ``anthropic``
+  SDK. Requires ``ANTHROPIC_API_KEY``. Use this if Claude Code is not
+  installed, you're on a Pro plan and don't want to burn weekly quota on
+  hundreds of summaries, or you want pay-per-token billing.
+
+Each conversation is processed in its own worker, with up to ``concurrency``
+calls in flight. Failures are logged but don't abort the run; reruns are
+idempotent (skips already-summarized conversations unless ``--refresh``).
 """
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 import subprocess
@@ -21,8 +30,16 @@ from typing import Iterable
 from . import search
 
 DEFAULT_MODEL = "haiku"  # Claude Code accepts model aliases (haiku/sonnet/opus)
+DEFAULT_BACKEND = "cli"
 DEFAULT_CONCURRENCY = 4
 DEFAULT_MAX_CHARS = 16000  # cap of conversation text sent per call
+
+# Aliases used by Claude Code CLI → Messages API model IDs
+_API_MODEL_ALIASES = {
+    "haiku": "claude-haiku-4-5",
+    "sonnet": "claude-sonnet-4-6",
+    "opus": "claude-opus-4-7",
+}
 
 PROMPT = """You are summarizing a single ChatGPT conversation so a future AI \
 assistant can decide whether to load the full transcript. Output ONLY a JSON \
@@ -97,7 +114,7 @@ def _extract_json(text: str) -> dict | None:
     return None
 
 
-def _call_claude(prompt: str, model: str, timeout: int) -> tuple[str, int, str | None]:
+def _call_claude_cli(prompt: str, model: str, timeout: int) -> tuple[str, int, str | None]:
     """Run `claude -p` once. Returns (raw_text, duration_ms, error_or_None)."""
     started = time.time()
     try:
@@ -108,6 +125,8 @@ def _call_claude(prompt: str, model: str, timeout: int) -> tuple[str, int, str |
             text=True,
             timeout=timeout,
         )
+    except FileNotFoundError:
+        return "", 0, "`claude` CLI not found on PATH; install Claude Code or use --backend api"
     except subprocess.TimeoutExpired:
         return "", int((time.time() - started) * 1000), "timeout"
     duration_ms = int((time.time() - started) * 1000)
@@ -122,15 +141,56 @@ def _call_claude(prompt: str, model: str, timeout: int) -> tuple[str, int, str |
     return envelope.get("result") or "", duration_ms, None
 
 
+def _resolve_api_model(name: str) -> str:
+    return _API_MODEL_ALIASES.get(name, name)
+
+
+def _call_anthropic_api(prompt: str, model: str, timeout: int) -> tuple[str, int, str | None]:
+    """Direct Anthropic Messages API call. Requires ANTHROPIC_API_KEY."""
+    started = time.time()
+    try:
+        import anthropic
+    except ImportError:
+        return "", 0, "anthropic SDK not installed; run: uv add anthropic"
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return "", 0, "ANTHROPIC_API_KEY not set"
+    api_model = _resolve_api_model(model)
+    client = anthropic.Anthropic()
+    try:
+        msg = client.with_options(timeout=timeout).messages.create(
+            model=api_model,
+            max_tokens=1024,
+            messages=[{"role": "user", "content": prompt}],
+        )
+    except anthropic.APIError as e:
+        return "", int((time.time() - started) * 1000), f"anthropic API error: {e}"[:500]
+    duration_ms = int((time.time() - started) * 1000)
+    text = "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
+    return text, duration_ms, None
+
+
+def _call_backend(
+    prompt: str, model: str, timeout: int, backend: str
+) -> tuple[str, int, str | None]:
+    if backend == "api":
+        return _call_anthropic_api(prompt, model, timeout)
+    if backend == "cli":
+        return _call_claude_cli(prompt, model, timeout)
+    return "", 0, f"unknown backend: {backend}"
+
+
 def summarize_one(
     conn: sqlite3.Connection,
     conversation_id: str,
     model: str = DEFAULT_MODEL,
     max_chars: int = DEFAULT_MAX_CHARS,
     timeout: int = 180,
+    backend: str = DEFAULT_BACKEND,
 ) -> SummaryResult:
     title, transcript = _build_transcript(conn, conversation_id, max_chars)
-    return summarize_from_text(conversation_id, title, transcript, model=model, timeout=timeout)
+    return summarize_from_text(
+        conversation_id, title, transcript, model=model, timeout=timeout, backend=backend
+    )
 
 
 def summarize_from_text(
@@ -139,9 +199,10 @@ def summarize_from_text(
     transcript: str,
     model: str = DEFAULT_MODEL,
     timeout: int = 180,
+    backend: str = DEFAULT_BACKEND,
 ) -> SummaryResult:
     prompt = PROMPT.replace("{title}", title).replace("{transcript}", transcript)
-    raw, duration, err = _call_claude(prompt, model=model, timeout=timeout)
+    raw, duration, err = _call_backend(prompt, model=model, timeout=timeout, backend=backend)
     if err:
         return SummaryResult(conversation_id=conversation_id, ok=False, error=err, duration_ms=duration)
     obj = _extract_json(raw)
@@ -211,10 +272,11 @@ def summarize_all(
     limit: int | None = None,
     max_chars: int = DEFAULT_MAX_CHARS,
     progress_path: Path | None = None,
+    backend: str = DEFAULT_BACKEND,
 ) -> dict:
     ids = _ids_to_summarize(conn, only_missing=only_missing, limit=limit)
     if not ids:
-        return {"requested": 0, "succeeded": 0, "failed": 0, "model": model}
+        return {"requested": 0, "succeeded": 0, "failed": 0, "model": model, "backend": backend}
 
     succeeded = 0
     failed: list[tuple[str, str]] = []
@@ -246,7 +308,7 @@ def summarize_all(
 
     with ThreadPoolExecutor(max_workers=concurrency) as ex:
         futures = {
-            ex.submit(summarize_from_text, cid, title, transcript, model): cid
+            ex.submit(summarize_from_text, cid, title, transcript, model, 180, backend): cid
             for cid, title, transcript in payloads
         }
         for i, fut in enumerate(as_completed(futures), 1):
@@ -269,5 +331,6 @@ def summarize_all(
         "failed": len(failed),
         "failures": failed[:10],  # sample
         "model": model,
+        "backend": backend,
         "elapsed_s": round(time.time() - started, 1),
     }

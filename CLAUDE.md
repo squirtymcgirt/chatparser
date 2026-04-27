@@ -34,7 +34,7 @@ Other useful flags:
 
 - `timeline --bucket {day|week|month|year} [--top N]` — activity per bucket plus top-N busiest threads. Good for "what was I working on in <time period>."
 - `stats` — corpus counts (conversations, messages, embeddings by model, summaries).
-- `summarize` — generates tldr/abstract/entities/status by shelling out to `claude -p`. Idempotent (`--refresh` to redo). Routes through Claude Code, so it bills against whatever plan/key Claude Code is configured with. ~6s/call sequentially, faster with `--concurrency 4`. Use `--limit N` for test runs.
+- `summarize` — generates tldr/abstract/entities/status. Two backends: `--backend cli` (default, shells out to `claude -p` — uses Claude Code's auth) or `--backend api` (direct Anthropic API — requires `ANTHROPIC_API_KEY`). Either is idempotent; pass `--refresh` to redo. ~6s/call sequentially, faster with `--concurrency 4`. Default model is `haiku`. Use `--limit N` for test runs.
 - `ingest <zip_or_dir>` — re-run is idempotent; dedupes on `conversation_id` keeping the newest export.
 - `embed` / `embed --granular` — re-run is idempotent; both layers can coexist. Use `--refresh` to re-encode everything.
 
