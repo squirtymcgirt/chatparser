@@ -18,16 +18,21 @@ class Hit:
     create_time: float | None
     update_time: float | None
     snippet: str | None = None
+    message_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out = {
             "conversation_id": self.conversation_id,
             "title": self.title,
             "score": round(float(self.score), 4),
             "create_time": self.create_time,
             "update_time": self.update_time,
-            "snippet": self.snippet,
         }
+        if self.snippet is not None:
+            out["snippet"] = self.snippet
+        if self.message_id is not None:
+            out["message_id"] = self.message_id
+        return out
 
 
 def semantic_search(
@@ -66,6 +71,64 @@ def semantic_search(
                 score=float(sims[i]),
                 create_time=meta["create_time"],
                 update_time=meta["update_time"],
+            )
+        )
+    return hits
+
+
+def granular_search(
+    conn: sqlite3.Connection,
+    query: str,
+    k: int = 10,
+    model_name: str = embed.DEFAULT_MODEL,
+    snippet_chars: int = 280,
+    one_per_conversation: bool = True,
+) -> list[Hit]:
+    """Top-k message-chunk matches. Returns hits with conversation + message context."""
+    rows, mat = embed.load_chunk_matrix(conn, model_name)
+    if not rows:
+        return []
+    qvec = embed.encode_query(query, model_name)
+    sims = mat @ qvec
+    pool = min(k * 8, len(rows))
+    top_idx = np.argpartition(-sims, pool - 1)[:pool]
+    top_idx = top_idx[np.argsort(-sims[top_idx])]
+
+    cids_seen: set[str] = set()
+    picks: list[tuple[int, float]] = []
+    for i in top_idx:
+        cid = rows[i]["conversation_id"]
+        if one_per_conversation and cid in cids_seen:
+            continue
+        cids_seen.add(cid)
+        picks.append((int(i), float(sims[i])))
+        if len(picks) >= k:
+            break
+
+    convo_meta = {
+        r["id"]: r
+        for r in conn.execute(
+            f"SELECT id, title, create_time, update_time FROM conversations "
+            f"WHERE id IN ({','.join('?' * len(picks))})",
+            [rows[i]["conversation_id"] for i, _ in picks],
+        ).fetchall()
+    }
+
+    hits: list[Hit] = []
+    for i, score in picks:
+        row = rows[i]
+        meta = convo_meta.get(row["conversation_id"])
+        text = row["text"] or ""
+        snippet = text[:snippet_chars] + ("…" if len(text) > snippet_chars else "")
+        hits.append(
+            Hit(
+                conversation_id=row["conversation_id"],
+                title=meta["title"] if meta else None,
+                score=score,
+                create_time=meta["create_time"] if meta else None,
+                update_time=meta["update_time"] if meta else None,
+                snippet=snippet,
+                message_id=row["message_id"],
             )
         )
     return hits

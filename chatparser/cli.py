@@ -31,12 +31,20 @@ def cmd_ingest(args: argparse.Namespace) -> int:
 def cmd_embed(args: argparse.Namespace) -> int:
     conn = db.connect(args.db)
     db.init_schema(conn)
-    stats = embed.embed_all(
-        conn,
-        model_name=args.model,
-        only_missing=not args.refresh,
-        batch_size=args.batch_size,
-    )
+    if args.granular:
+        stats = embed.embed_messages_all(
+            conn,
+            model_name=args.model,
+            only_missing=not args.refresh,
+            batch_size=args.batch_size,
+        )
+    else:
+        stats = embed.embed_all(
+            conn,
+            model_name=args.model,
+            only_missing=not args.refresh,
+            batch_size=args.batch_size,
+        )
     print(json.dumps(stats, indent=2))
     return 0
 
@@ -45,6 +53,14 @@ def cmd_search(args: argparse.Namespace) -> int:
     conn = db.connect(args.db)
     if args.lexical:
         hits = search.lexical_search(conn, args.query, k=args.k)
+    elif args.granular:
+        hits = search.granular_search(
+            conn,
+            args.query,
+            k=args.k,
+            model_name=args.model,
+            one_per_conversation=not args.allow_dupes,
+        )
     else:
         hits = search.semantic_search(conn, args.query, k=args.k, model_name=args.model)
     print(json.dumps([h.to_dict() for h in hits], indent=2))
@@ -105,11 +121,16 @@ def build_parser() -> argparse.ArgumentParser:
     pi.add_argument("path", help="Path to a zip file or a directory of zips")
     pi.set_defaults(func=cmd_ingest)
 
-    pe = sub.add_parser("embed", help="Compute conversation embeddings")
+    pe = sub.add_parser("embed", help="Compute embeddings")
     _add_db_arg(pe)
     pe.add_argument("--model", default=embed.DEFAULT_MODEL)
-    pe.add_argument("--refresh", action="store_true", help="Re-embed all conversations")
+    pe.add_argument("--refresh", action="store_true", help="Re-embed everything")
     pe.add_argument("--batch-size", type=int, default=32)
+    pe.add_argument(
+        "--granular",
+        action="store_true",
+        help="Embed per-message chunks instead of per-conversation blobs",
+    )
     pe.set_defaults(func=cmd_embed)
 
     ps = sub.add_parser("search", help="Find conversations matching a query")
@@ -117,6 +138,16 @@ def build_parser() -> argparse.ArgumentParser:
     ps.add_argument("query")
     ps.add_argument("-k", type=int, default=10)
     ps.add_argument("--lexical", action="store_true", help="Use FTS5 BM25 instead of embeddings")
+    ps.add_argument(
+        "--granular",
+        action="store_true",
+        help="Search per-message chunk embeddings (requires `embed --granular` to have run)",
+    )
+    ps.add_argument(
+        "--allow-dupes",
+        action="store_true",
+        help="With --granular, allow multiple chunks from the same conversation in results",
+    )
     ps.add_argument("--model", default=embed.DEFAULT_MODEL)
     ps.set_defaults(func=cmd_search)
 

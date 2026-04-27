@@ -75,6 +75,23 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     message_id UNINDEXED,
     tokenize = 'unicode61 remove_diacritics 2'
 );
+
+CREATE TABLE IF NOT EXISTS message_chunks (
+    chunk_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    chunk_index INTEGER NOT NULL,
+    char_start INTEGER NOT NULL,
+    char_end INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    model TEXT NOT NULL,
+    dim INTEGER NOT NULL,
+    vector BLOB NOT NULL,
+    generated_at REAL,
+    UNIQUE(message_id, chunk_index, model)
+);
+CREATE INDEX IF NOT EXISTS idx_chunks_conv ON message_chunks(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_model ON message_chunks(model);
 """
 
 
