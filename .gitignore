@@ -1,0 +1,21 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Generated artifacts
+chatparser.db
+chatparser.db-wal
+chatparser.db-shm
+
+# Personal data — ChatGPT exports stay local
+data_files/
+
+# Local Claude Code settings
+.claude/
