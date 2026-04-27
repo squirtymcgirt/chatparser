@@ -134,6 +134,59 @@ def granular_search(
     return hits
 
 
+def hybrid_search(
+    conn: sqlite3.Connection,
+    query: str,
+    k: int = 10,
+    model_name: str = embed.DEFAULT_MODEL,
+    granular: bool = False,
+    rrf_k: int = 60,
+    pool: int = 50,
+) -> list[Hit]:
+    """Reciprocal-rank fusion of semantic + BM25 results.
+
+    Score scales for cosine and BM25 are incomparable, so we ignore raw scores
+    and fuse by rank: 1/(rrf_k + rank). Each branch contributes a ranked list of
+    `pool` hits; the union is re-sorted by combined RRF score and truncated to k.
+    """
+    if granular:
+        sem = granular_search(conn, query, k=pool, model_name=model_name)
+    else:
+        sem = semantic_search(conn, query, k=pool, model_name=model_name)
+    lex = lexical_search(conn, query, k=pool)
+
+    rrf: dict[str, float] = {}
+    by_id: dict[str, Hit] = {}
+    for rank, h in enumerate(sem):
+        rrf[h.conversation_id] = rrf.get(h.conversation_id, 0.0) + 1.0 / (rrf_k + rank)
+        by_id.setdefault(h.conversation_id, h)
+    for rank, h in enumerate(lex):
+        rrf[h.conversation_id] = rrf.get(h.conversation_id, 0.0) + 1.0 / (rrf_k + rank)
+        # prefer existing semantic Hit (it may carry a snippet); else use lex (has snippet)
+        prev = by_id.get(h.conversation_id)
+        if prev is None:
+            by_id[h.conversation_id] = h
+        elif prev.snippet is None and h.snippet:
+            prev.snippet = h.snippet
+
+    ranked = sorted(rrf.items(), key=lambda kv: kv[1], reverse=True)[:k]
+    out: list[Hit] = []
+    for cid, score in ranked:
+        h = by_id[cid]
+        out.append(
+            Hit(
+                conversation_id=h.conversation_id,
+                title=h.title,
+                score=score,
+                create_time=h.create_time,
+                update_time=h.update_time,
+                snippet=h.snippet,
+                message_id=h.message_id,
+            )
+        )
+    return out
+
+
 def lexical_search(conn: sqlite3.Connection, query: str, k: int = 10) -> list[Hit]:
     # Pull a generous pool of per-message hits ranked by bm25, then collapse to
     # one row per conversation (best message wins). bm25() can't be used inside
@@ -236,6 +289,58 @@ def render_conversation(
     if max_chars and len(rendered) > max_chars:
         rendered = rendered[:max_chars] + f"\n\n…[truncated at {max_chars} chars]"
     return rendered
+
+
+def timeline(
+    conn: sqlite3.Connection,
+    bucket: str = "month",
+    top_n: int = 5,
+) -> list[dict[str, Any]]:
+    """Activity buckets: how many conversations per month, plus the top-N by message count."""
+    fmt = {"day": "%Y-%m-%d", "week": "%Y-W%W", "month": "%Y-%m", "year": "%Y"}.get(bucket)
+    if fmt is None:
+        raise ValueError(f"unknown bucket: {bucket}")
+
+    rows = conn.execute(
+        f"""
+        SELECT
+            strftime('{fmt}', create_time, 'unixepoch') AS bucket,
+            id,
+            title,
+            create_time,
+            update_time,
+            (SELECT COUNT(*) FROM messages m
+             WHERE m.conversation_id = c.id AND m.on_active_path = 1
+               AND m.author_role IN ('user','assistant')) AS msg_count
+        FROM conversations c
+        WHERE create_time IS NOT NULL
+        ORDER BY bucket DESC, msg_count DESC
+        """
+    ).fetchall()
+
+    out: list[dict[str, Any]] = []
+    by_bucket: dict[str, list[sqlite3.Row]] = {}
+    for r in rows:
+        by_bucket.setdefault(r["bucket"], []).append(r)
+
+    for b in sorted(by_bucket.keys(), reverse=True):
+        items = by_bucket[b]
+        out.append(
+            {
+                "bucket": b,
+                "conversation_count": len(items),
+                "total_messages": sum(int(r["msg_count"] or 0) for r in items),
+                "top_conversations": [
+                    {
+                        "conversation_id": r["id"],
+                        "title": r["title"],
+                        "messages": int(r["msg_count"] or 0),
+                    }
+                    for r in items[:top_n]
+                ],
+            }
+        )
+    return out
 
 
 def conversation_summary(conn: sqlite3.Connection, conversation_id: str) -> dict[str, Any] | None:

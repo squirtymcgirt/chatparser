@@ -6,7 +6,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import db, embed, ingest, search
+from . import db, embed, ingest, search, summarize
 
 
 def _add_db_arg(p: argparse.ArgumentParser) -> None:
@@ -53,6 +53,14 @@ def cmd_search(args: argparse.Namespace) -> int:
     conn = db.connect(args.db)
     if args.lexical:
         hits = search.lexical_search(conn, args.query, k=args.k)
+    elif args.hybrid:
+        hits = search.hybrid_search(
+            conn,
+            args.query,
+            k=args.k,
+            model_name=args.model,
+            granular=args.granular,
+        )
     elif args.granular:
         hits = search.granular_search(
             conn,
@@ -64,6 +72,30 @@ def cmd_search(args: argparse.Namespace) -> int:
     else:
         hits = search.semantic_search(conn, args.query, k=args.k, model_name=args.model)
     print(json.dumps([h.to_dict() for h in hits], indent=2))
+    return 0
+
+
+def cmd_timeline(args: argparse.Namespace) -> int:
+    conn = db.connect(args.db)
+    out = search.timeline(conn, bucket=args.bucket, top_n=args.top)
+    print(json.dumps(out, indent=2, default=str))
+    return 0
+
+
+def cmd_summarize(args: argparse.Namespace) -> int:
+    conn = db.connect(args.db)
+    db.init_schema(conn)
+    progress_path = Path(args.progress) if args.progress else None
+    stats = summarize.summarize_all(
+        conn,
+        model=args.model,
+        only_missing=not args.refresh,
+        concurrency=args.concurrency,
+        limit=args.limit,
+        max_chars=args.max_chars,
+        progress_path=progress_path,
+    )
+    print(json.dumps(stats, indent=2, default=str))
     return 0
 
 
@@ -144,12 +176,40 @@ def build_parser() -> argparse.ArgumentParser:
         help="Search per-message chunk embeddings (requires `embed --granular` to have run)",
     )
     ps.add_argument(
+        "--hybrid",
+        action="store_true",
+        help="Reciprocal-rank fuse semantic + BM25 (combine with --granular for chunk-level semantic side)",
+    )
+    ps.add_argument(
         "--allow-dupes",
         action="store_true",
         help="With --granular, allow multiple chunks from the same conversation in results",
     )
     ps.add_argument("--model", default=embed.DEFAULT_MODEL)
     ps.set_defaults(func=cmd_search)
+
+    pt = sub.add_parser("timeline", help="Activity timeline (counts + top conversations per bucket)")
+    _add_db_arg(pt)
+    pt.add_argument("--bucket", choices=("day", "week", "month", "year"), default="month")
+    pt.add_argument("--top", type=int, default=5, help="Top-N conversations per bucket")
+    pt.set_defaults(func=cmd_timeline)
+
+    psum = sub.add_parser(
+        "summarize",
+        help="Generate tldr/abstract per conversation via headless `claude -p` (uses your Max plan)",
+    )
+    _add_db_arg(psum)
+    psum.add_argument("--model", default=summarize.DEFAULT_MODEL, help="claude model alias")
+    psum.add_argument("--refresh", action="store_true", help="Re-summarize even if a summary exists")
+    psum.add_argument("--limit", type=int, default=None, help="Cap number of conversations (test runs)")
+    psum.add_argument("--concurrency", type=int, default=summarize.DEFAULT_CONCURRENCY)
+    psum.add_argument("--max-chars", type=int, default=summarize.DEFAULT_MAX_CHARS)
+    psum.add_argument(
+        "--progress",
+        default=None,
+        help="Optional path to write a JSON progress file during the run",
+    )
+    psum.set_defaults(func=cmd_summarize)
 
     psh = sub.add_parser("show", help="Render a conversation as markdown")
     _add_db_arg(psh)
