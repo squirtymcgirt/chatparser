@@ -250,14 +250,15 @@ def _persist(conn: sqlite3.Connection, model: str, res: SummaryResult) -> None:
     conn.execute(
         """
         INSERT OR REPLACE INTO summaries
-            (conversation_id, tldr, abstract, entities_json, model, generated_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+            (conversation_id, tldr, abstract, entities_json, status, model, generated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
         (
             res.conversation_id,
             res.tldr,
             res.abstract,
             json.dumps(res.entities or []),
+            res.status,
             model,
             time.time(),
         ),

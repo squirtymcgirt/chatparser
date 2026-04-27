@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "Ingest ChatGPT exports into a searchable SQLite corpus for Claude to query."
 readme = "README.md"
 requires-python = ">=3.13"
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = [
     "sentence-transformers>=3.0",
     "numpy>=2.0",

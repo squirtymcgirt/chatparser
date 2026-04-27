@@ -1,5 +1,9 @@
 # chatparser
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.13+](https://img.shields.io/badge/python-3.13%2B-blue.svg)](https://www.python.org/downloads/)
+[![SQLite](https://img.shields.io/badge/storage-SQLite-003B57.svg)](https://www.sqlite.org/)
+
 Turns ChatGPT conversation exports into a SQLite corpus designed for **Claude** to query, so a Claude session can pick up half-finished projects buried in old ChatGPT threads.
 
 The intended consumer is an AI assistant, not a human UI. Output is JSON (search, meta, stats, timeline) or markdown (`show`).
@@ -47,6 +51,26 @@ uv run chatparser show <conversation_id> --max-chars 20000
 ```
 
 See [CLAUDE.md](CLAUDE.md) for the recommended Claude-driven workflow.
+
+### Example output
+
+`search` returns JSON, ranked by score. With `--hybrid --granular` you also get a snippet and the matching `message_id`:
+
+```json
+[
+  {
+    "conversation_id": "6a1c…",
+    "title": "<conversation title>",
+    "score": 0.0301,
+    "create_time": 1745135511.17,
+    "update_time": 1745140052.32,
+    "snippet": "<the chunk text that matched the query>",
+    "message_id": "46ae…"
+  }
+]
+```
+
+`meta <id>` returns a small JSON envelope with title, timestamps, message counts, and (if `summarize` has been run) `tldr` / `abstract` / `status`. `show <id>` renders the active branch as markdown so Claude can ingest it directly.
 
 ## Summaries (optional)
 

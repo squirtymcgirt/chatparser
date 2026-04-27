@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS summaries (
     tldr TEXT,
     abstract TEXT,
     entities_json TEXT,
+    status TEXT,
     model TEXT,
     generated_at REAL
 );
@@ -105,4 +106,13 @@ def connect(path: Path | str = DEFAULT_DB_PATH) -> sqlite3.Connection:
 
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    _add_column_if_missing(conn, "summaries", "status", "TEXT")
     conn.commit()
+
+
+def _add_column_if_missing(
+    conn: sqlite3.Connection, table: str, column: str, decl: str
+) -> None:
+    cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
